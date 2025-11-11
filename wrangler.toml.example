@@ -1,0 +1,107 @@
+# WordPress Image CDN Worker Configuration Example
+# Copy this file to wrangler.toml and configure for your environment
+# WordPress image CDN with R2 caching
+
+# ==============================================================================
+# Test/Development Environment
+# ==============================================================================
+
+name = "image-cdn-worker-test"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Worker routes (edge-level route binding)
+# Note: You must also add custom domain in Cloudflare dashboard for DNS
+# Workers & Pages > [worker-name] > Settings > Domains > Add Custom Domain
+routes = [
+  { pattern = "worker.yourdomain.com/*", zone_name = "yourdomain.com" }
+]
+
+# R2 bucket for image caching
+# Configure this bucket as public for direct CDN access
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "imgpro-cdn-test"
+
+# Environment variables
+[vars]
+# Allowed origin domains (comma-separated or "*" for all)
+# Examples: "example.com,blog.example.com" or "*"
+ALLOWED_ORIGINS = "*"
+
+# CDN domain for R2 public bucket (where images are served from)
+# This should be your R2 public bucket custom domain
+CDN_DOMAIN = "cdn.yourdomain.com"
+
+# Debug mode (enables workflow logging to console)
+# Set to "true" for development, "false" for production
+DEBUG = "true"
+
+# Maximum file size for uploads
+# Formats: "B", "KB", "MB", "GB", "TB"
+# Examples: "50MB", "100MB", "1GB"
+MAX_FILE_SIZE = "50MB"
+
+# Fetch timeout in milliseconds
+# How long to wait for origin response before timing out
+FETCH_TIMEOUT = "30000"
+
+# User-Agent header sent to origin servers
+# Helps origins identify requests from your CDN
+ORIGIN_USER_AGENT = "ImageCDN/1.0 WordPress Cache"
+
+# ==============================================================================
+# Production Environment
+# ==============================================================================
+
+[env.production]
+name = "image-cdn-worker-prod"
+
+# Production routes
+routes = [
+  { pattern = "worker.yourdomain.com/*", zone_name = "yourdomain.com" }
+]
+
+# Production environment variables
+[env.production.vars]
+ALLOWED_ORIGINS = "*"
+CDN_DOMAIN = "cdn.yourdomain.com"
+DEBUG = "false"                    # Disable debug logging in production
+MAX_FILE_SIZE = "100MB"            # Higher limit for production
+FETCH_TIMEOUT = "30000"
+ORIGIN_USER_AGENT = "ImageCDN/1.0 WordPress Cache"
+
+# Production R2 bucket
+[[env.production.r2_buckets]]
+binding = "R2"
+bucket_name = "imgpro-cdn-prod"
+
+# ==============================================================================
+# Configuration Notes
+# ==============================================================================
+
+# IMPORTANT: After configuring this file:
+# 1. Copy to wrangler.toml: cp wrangler.toml.example wrangler.toml
+# 2. Update values for your environment (bucket names, domains, limits)
+# 3. Create R2 buckets: wrangler r2 bucket create [bucket-name]
+# 4. Configure R2 bucket as public for CDN access
+# 5. Add custom domain in Cloudflare dashboard for DNS records
+# 6. Deploy: npm run deploy (test) or npm run deploy:fetch-wp:prod (production)
+
+# R2 Public Bucket Setup:
+# - Go to R2 > [bucket-name] > Settings > Public Access
+# - Enable public access and configure custom domain (e.g., cdn.yourdomain.com)
+# - This allows images to be served directly from R2 without worker overhead
+
+# Custom Domain Setup:
+# - Workers & Pages > [worker-name] > Settings > Domains
+# - Click "Add Custom Domain"
+# - Enter domain (e.g., worker.yourdomain.com)
+# - DNS records created automatically
+# - SSL/TLS certificate provisioned automatically
+
+# Routes vs Custom Domains:
+# - Routes (in this file): Edge-level binding, version controlled
+# - Custom Domains (dashboard): DNS records, automatic SSL/TLS
+# - Both are needed: routes for edge routing, custom domains for DNS

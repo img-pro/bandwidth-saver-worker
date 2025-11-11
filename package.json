@@ -1,0 +1,22 @@
+{
+  "name": "@img/fetch-wp",
+  "version": "1.0.3",
+  "description": "Img Fetch-WP Worker - CDN with R2 caching for WordPress images",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "build": "tsc"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "cdn",
+    "cache",
+    "wordpress",
+    "imgpro"
+  ],
+  "author": "Img",
+  "license": "MIT"
+}
