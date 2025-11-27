@@ -4,7 +4,6 @@
 export interface Env {
   R2: R2Bucket;
   ALLOWED_ORIGINS?: string;
-  CDN_DOMAIN?: string;
   DEBUG?: string;
   MAX_FILE_SIZE?: string;
   FETCH_TIMEOUT?: string;

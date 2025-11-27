@@ -1,10 +1,13 @@
 /**
  * ImgPro - CDN Worker
  *
- * Fetches images from origin and caches them in R2 for fast CDN delivery.
- * Preserves original image quality without any AI processing.
+ * Single-domain CDN architecture: serves images directly from the worker.
+ * - Cache hit: Returns image from R2 with long cache headers
+ * - Cache miss: Fetches from origin, stores in R2, returns image
  *
- * @version 1.0.4
+ * No separate R2 public bucket domain needed - the worker IS the CDN.
+ *
+ * @version 1.1.0
  */
 
 import type { Env, LogEntry } from './types';
@@ -37,7 +40,7 @@ export default {
     if (url.pathname === '/health' || url.pathname === '/ping') {
       return new Response(JSON.stringify({
         status: 'healthy',
-        version: '1.0.4',
+        version: '1.1.0',
         timestamp: new Date().toISOString(),
       }), {
         status: 200,
@@ -111,26 +114,21 @@ export default {
       if (!parsed.forceReprocess) {
         const cached = await getFromCache(env, parsed.cacheKey);
         if (cached) {
-          const cdnDomain = env.CDN_DOMAIN || 'cdn.yourdomain.com';
-          const encodedKey = parsed.cacheKey
-            .split('/')
-            .map(segment => encodeURIComponent(segment))
-            .join('/');
-          addLog('Cache HIT', `${cdnDomain}/${encodedKey}`);
+          addLog('Cache HIT', parsed.cacheKey);
 
-          // Check ETag for conditional request
+          // Check ETag for conditional request (304 Not Modified)
           const conditionalResponse = handleConditionalRequest(request, cached.etag);
           if (conditionalResponse) {
             addLog('Conditional request', '304 Not Modified');
             return conditionalResponse;
           }
 
+          const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
+          const metadata = cached.customMetadata || {};
+
           // If view parameter is set, return HTML viewer
           if (parsed.viewImage) {
             const imageData = await cached.arrayBuffer();
-            const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
-            const metadata = cached.customMetadata || {};
-
             const totalTime = Date.now() - startTime;
             addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
 
@@ -140,7 +138,7 @@ export default {
               status: 'cached',
               imageSize: imageData.byteLength,
               sourceUrl: parsed.sourceUrl,
-              cdnUrl: `https://${cdnDomain}/${encodedKey}`,
+              cdnUrl: request.url.split('?')[0], // Current URL without query params
               cacheKey: parsed.cacheKey,
               cachedAt: metadata.cachedAt,
               processingTime: totalTime,
@@ -149,15 +147,18 @@ export default {
             });
           }
 
-          // Return 1x1 transparent GIF (prevents using worker as image endpoint)
-          return new Response(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), {
+          // Return the actual image with long cache headers
+          addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+          return new Response(cached.body, {
             status: 200,
             headers: {
-              'Content-Type': 'image/gif',
-              'Cache-Control': 'no-cache',
-              'Content-Length': '43',
+              'Content-Type': imageContentType,
+              'Content-Length': cached.size.toString(),
+              'Cache-Control': 'public, max-age=31536000, immutable',
               'ETag': cached.etag,
-              'X-ImgPro-Status': 'cached',
+              'Last-Modified': cached.uploaded.toUTCString(),
+              'X-ImgPro-Status': 'hit',
+              'X-ImgPro-Cached-At': metadata.cachedAt || '',
               ...getCORSHeaders(),
             },
           });
@@ -223,14 +224,8 @@ export default {
         parsed.domain
       );
 
-      const cdnDomain = env.CDN_DOMAIN || 'cdn.yourdomain.com';
-      const encodedKey = parsed.cacheKey
-        .split('/')
-        .map(segment => encodeURIComponent(segment))
-        .join('/');
-      const cdnUrl = `https://${cdnDomain}/${encodedKey}`;
-
-      addLog('Stored in R2', `${formatBytes(imageData.byteLength)} at ${cdnUrl}`);
+      const cdnUrl = request.url.split('?')[0]; // Current URL without query params
+      addLog('Stored in R2', `${formatBytes(imageData.byteLength)}`);
 
       // If view parameter is set, return HTML viewer
       if (parsed.viewImage) {
@@ -252,15 +247,15 @@ export default {
         });
       }
 
-      // Return 1x1 transparent GIF (prevents using worker as image endpoint)
-      return new Response(atob('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'), {
+      // Return the actual image (just fetched and cached)
+      addLog('Serving image', `${formatBytes(imageData.byteLength)}, ${contentType}`);
+      return new Response(imageData, {
         status: 200,
         headers: {
-          'Content-Type': 'image/gif',
-          'Cache-Control': 'no-cache',
-          'Content-Length': '43',
-          'X-ImgPro-Status': 'fetched',
-          'X-ImgPro-Size': imageData.byteLength.toString(),
+          'Content-Type': contentType,
+          'Content-Length': imageData.byteLength.toString(),
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'X-ImgPro-Status': 'miss',
           ...getCORSHeaders(),
         },
       });
