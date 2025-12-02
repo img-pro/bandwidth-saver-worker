@@ -107,8 +107,10 @@ export function isValidDomain(domain: string): boolean {
     return false;
   }
 
-  // Block IP addresses (IPv4)
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(domain)) {
+  // Block IP addresses (IPv4) - validate each octet is 0-255
+  const ipv4Match = domain.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    // Block all IPv4 addresses (valid or invalid octets)
     return false;
   }
 
@@ -126,9 +128,14 @@ export function isValidDomain(domain: string): boolean {
     /\.home$/i,
     /\.corp$/i,
     /\.private$/i,
+    // Cloud provider metadata services
     /^metadata\.google\.internal$/i,
     /\.compute\.internal$/i,
     /\.ec2\.internal$/i,
+    /^instance-data\./i,
+    // Common metadata hostnames
+    /^metadata\./i,
+    /^169\.254\./,  // Link-local / metadata IP range as domain
   ];
   if (internalPatterns.some(pattern => pattern.test(lowerDomain))) {
     return false;
