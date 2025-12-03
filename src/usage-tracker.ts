@@ -2,15 +2,20 @@
  * Per-Site Usage Tracker Durable Object
  *
  * Each WordPress site gets its own Durable Object instance that:
- * 1. Accumulates usage metrics in memory (bandwidth, requests, cache hits/misses)
+ * 1. Accumulates usage metrics in persistent storage (survives eviction)
  * 2. Writes to billing D1 database every 60 seconds via alarm
  * 3. Only writes when there's actual activity (silent when idle)
  *
  * Architecture:
  * - Worker sends metrics to DO via ctx.waitUntil (no blocking)
- * - DO accumulates counters in memory
+ * - DO accumulates counters in state.storage (persistent)
  * - Alarm triggers every 60s to flush to D1
  * - Direct D1 access (no API calls, no API keys exposed)
+ *
+ * Durability:
+ * - Counters persist in state.storage, surviving memory eviction
+ * - DO can be evicted after ~10s of inactivity, but storage persists
+ * - Alarm is guaranteed to fire even after eviction/re-hydration
  *
  * Scaling:
  * - Each site = one DO instance
@@ -28,25 +33,66 @@ export interface UsageMetrics {
 	cacheHit: boolean;
 }
 
+// Storage keys for persistent counters
+const STORAGE_KEYS = {
+	SITE_ID: 'siteId',
+	DOMAIN: 'domain',
+	BANDWIDTH: 'bandwidth',
+	REQUESTS: 'requests',
+	CACHE_HITS: 'cacheHits',
+	CACHE_MISSES: 'cacheMisses',
+} as const;
+
 export class SiteUsageTracker implements DurableObject {
 	private state: DurableObjectState;
 	private env: Env;
 
-	// In-memory counters (reset after each flush)
-	private initialized: boolean = false;
+	// In-memory cache of storage values (for performance)
+	// These are synced with state.storage on each operation
 	private siteId: number = 0;
 	private domain: string = '';
 	private bandwidth: number = 0;
 	private requests: number = 0;
 	private cacheHits: number = 0;
 	private cacheMisses: number = 0;
+	private initialized: boolean = false;
 
 	constructor(state: DurableObjectState, env: Env) {
 		this.state = state;
 		this.env = env;
 
-		// Set initial alarm for 60 seconds from now
+		// Load persisted state before handling any requests
+		// This ensures we recover counters after memory eviction
+		this.state.blockConcurrencyWhile(async () => {
+			await this.loadFromStorage();
+		});
+
+		// Set initial alarm for 60 seconds from now (if not already set)
 		this.state.storage.setAlarm(Date.now() + 60000);
+	}
+
+	/**
+	 * Load counters from persistent storage
+	 */
+	private async loadFromStorage(): Promise<void> {
+		const stored = await this.state.storage.get<number | string>([
+			STORAGE_KEYS.SITE_ID,
+			STORAGE_KEYS.DOMAIN,
+			STORAGE_KEYS.BANDWIDTH,
+			STORAGE_KEYS.REQUESTS,
+			STORAGE_KEYS.CACHE_HITS,
+			STORAGE_KEYS.CACHE_MISSES,
+		]);
+
+		this.siteId = (stored.get(STORAGE_KEYS.SITE_ID) as number) || 0;
+		this.domain = (stored.get(STORAGE_KEYS.DOMAIN) as string) || '';
+		this.bandwidth = (stored.get(STORAGE_KEYS.BANDWIDTH) as number) || 0;
+		this.requests = (stored.get(STORAGE_KEYS.REQUESTS) as number) || 0;
+		this.cacheHits = (stored.get(STORAGE_KEYS.CACHE_HITS) as number) || 0;
+		this.cacheMisses = (stored.get(STORAGE_KEYS.CACHE_MISSES) as number) || 0;
+
+		// If we have a siteId, we've been initialized before
+		this.initialized = this.siteId !== 0 || this.domain !== '';
 	}
 
 	/**
@@ -58,11 +104,16 @@ export class SiteUsageTracker implements DurableObject {
 		try {
 			const metrics: UsageMetrics = await request.json();
 
+			// Prepare storage updates
+			const updates: Map<string, number | string> = new Map();
+
 			// Store siteId/domain from first request (should always be same for this DO)
 			if (!this.initialized) {
 				this.initialized = true;
 				this.siteId = metrics.siteId;
 				this.domain = metrics.domain;
+				updates.set(STORAGE_KEYS.SITE_ID, metrics.siteId);
+				updates.set(STORAGE_KEYS.DOMAIN, metrics.domain);
 			}
 
 			// Accumulate metrics
@@ -74,6 +125,14 @@ export class SiteUsageTracker implements DurableObject {
 			} else {
 				this.cacheMisses += 1;
 			}
+
+			// Persist all counters atomically
+			updates.set(STORAGE_KEYS.BANDWIDTH, this.bandwidth);
+			updates.set(STORAGE_KEYS.REQUESTS, this.requests);
+			updates.set(STORAGE_KEYS.CACHE_HITS, this.cacheHits);
+			updates.set(STORAGE_KEYS.CACHE_MISSES, this.cacheMisses);
+
+			await this.state.storage.put(Object.fromEntries(updates));
 
 			return new Response('OK', { status: 200 });
 		} catch (err) {
@@ -133,11 +192,18 @@ export class SiteUsageTracker implements DurableObject {
 				`[UsageTracker] Flushed ${this.domain}: ${this.requests} req, ${this.bandwidth} bytes, ${this.cacheHits} hits, ${this.cacheMisses} misses`
 			);
 
-			// Reset counters after successful flush
+			// Reset counters after successful flush (both in-memory and storage)
 			this.bandwidth = 0;
 			this.requests = 0;
 			this.cacheHits = 0;
 			this.cacheMisses = 0;
+
+			await this.state.storage.put({
+				[STORAGE_KEYS.BANDWIDTH]: 0,
+				[STORAGE_KEYS.REQUESTS]: 0,
+				[STORAGE_KEYS.CACHE_HITS]: 0,
+				[STORAGE_KEYS.CACHE_MISSES]: 0,
+			});
 		} catch (err) {
 			console.error(`[UsageTracker] D1 write failed for ${this.domain}:`, err);
 			// Don't reset counters - will retry on next alarm

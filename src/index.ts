@@ -130,6 +130,8 @@ export default {
           const conditionalResponse = handleConditionalRequest(request, cached.etag);
           if (conditionalResponse) {
             addLog('Conditional request', '304 Not Modified');
+            // Track as cache hit with 0 bytes (no body transferred)
+            trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
             return conditionalResponse;
           }
 
