@@ -32,11 +32,15 @@ import {
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
 import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
+import { trackUsage } from './usage';
 
 const VERSION = '1.2.1';
 
+// Export Durable Object for usage tracking
+export { SiteUsageTracker } from './usage-tracker';
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // CORS preflight
@@ -126,6 +130,8 @@ export default {
           const conditionalResponse = handleConditionalRequest(request, cached.etag);
           if (conditionalResponse) {
             addLog('Conditional request', '304 Not Modified');
+            // Track as cache hit with 0 bytes (no body transferred)
+            trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
             return conditionalResponse;
           }
 
@@ -134,6 +140,8 @@ export default {
 
           // If view parameter is set, return HTML viewer
           // SECURITY: Only allow in debug mode to prevent information disclosure
+          // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
+          // shouldn't count toward billing metrics or inflate production statistics
           if (parsed.viewImage && env.DEBUG === 'true') {
             const imageData = await cached.arrayBuffer();
             const totalTime = Date.now() - startTime;
@@ -156,6 +164,10 @@ export default {
 
           // Return the actual image with long cache headers
           addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+
+          // Track usage (cache hit)
+          trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
+
           return new Response(cached.body, {
             status: 200,
             headers: {
@@ -261,6 +273,8 @@ export default {
 
       // If view parameter is set, return HTML viewer
       // SECURITY: Only allow in debug mode to prevent information disclosure
+      // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
+      // shouldn't count toward billing metrics or inflate production statistics
       if (parsed.viewImage && env.DEBUG === 'true') {
         const totalTime = Date.now() - startTime;
         addLog('Generating HTML viewer', `Processing complete in ${totalTime}ms`);
@@ -283,6 +297,10 @@ export default {
       // Return the actual image (just fetched and cached)
       // Note: No ETag on cache miss - R2 will provide ETag on subsequent cache hits
       addLog('Serving image', `${formatBytes(imageData.byteLength)}, ${contentType}`);
+
+      // Track usage (cache miss)
+      trackUsage(env, ctx, parsed.domain, imageData.byteLength, false, validation.domain_records);
+
       return new Response(imageData, {
         status: 200,
         headers: {
