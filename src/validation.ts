@@ -273,7 +273,17 @@ export async function validateOrigin(
     }
 
     if (matchesDomainList(domain, configAllowed)) {
-      return { allowed: true, reason: 'allowed', source: 'config' };
+      // Lookup domain records for usage tracking (non-blocking)
+      let domain_records: DomainRecord[] | undefined;
+      if (env.ORIGINS_KV) {
+        try {
+          domain_records = await getDomainRecords(domain, env.ORIGINS_KV);
+        } catch (e) {
+          // Silently fail - tracking is optional in list mode
+          console.warn('[validateOrigin] KV lookup failed in list mode:', e);
+        }
+      }
+      return { allowed: true, reason: 'allowed', source: 'config', domain_records };
     }
 
     return { allowed: false, reason: 'not_in_allowlist', source: 'config' };

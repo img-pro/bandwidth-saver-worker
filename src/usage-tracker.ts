@@ -33,6 +33,7 @@ export class SiteUsageTracker implements DurableObject {
 	private env: Env;
 
 	// In-memory counters (reset after each flush)
+	private initialized: boolean = false;
 	private siteId: number = 0;
 	private domain: string = '';
 	private bandwidth: number = 0;
@@ -58,7 +59,8 @@ export class SiteUsageTracker implements DurableObject {
 			const metrics: UsageMetrics = await request.json();
 
 			// Store siteId/domain from first request (should always be same for this DO)
-			if (!this.siteId) {
+			if (!this.initialized) {
+				this.initialized = true;
 				this.siteId = metrics.siteId;
 				this.domain = metrics.domain;
 			}
