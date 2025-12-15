@@ -13,6 +13,7 @@ export interface Env {
   MAX_FILE_SIZE?: string;
   FETCH_TIMEOUT?: string;
   ORIGIN_USER_AGENT?: string;
+  FORWARD_CLIENT_IP?: string;  // Set to "true" to forward X-Forwarded-For
 }
 
 /**

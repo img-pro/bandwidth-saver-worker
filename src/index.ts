@@ -21,8 +21,8 @@
  */
 
 import type { Env, LogEntry } from './types';
-import { parseUrl, validateOrigin, isImageContentType, validateUrlDomain } from './validation';
-import { fetchFromOrigin, fetchImageData } from './origin';
+import { parseUrl, validateOrigin, isImageContentType, validateUrlForFetch } from './validation';
+import { fetchImageFromOrigin, fetchImageData } from './origin';
 import {
   getFromCache,
   handleHeadRequest,
@@ -126,6 +126,31 @@ export default {
         if (cached) {
           addLog('Cache HIT', parsed.cacheKey);
 
+          const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
+
+          // Validate cached content is actually an image
+          // (protects against previously cached HTML/garbage)
+          if (!cachedContentType.startsWith('image/')) {
+            addLog('Invalid cached content', `${cachedContentType} - deleting and redirecting`);
+            // Delete invalid cached content
+            try {
+              await env.R2.delete(parsed.cacheKey);
+            } catch (e) {
+              console.error('Failed to delete invalid cache entry:', e);
+            }
+            // Redirect to origin
+            return new Response(null, {
+              status: 302,
+              headers: {
+                'Location': parsed.sourceUrl,
+                'Cache-Control': 'no-store, no-cache, must-revalidate',
+                'X-ImgPro-Status': 'redirect',
+                'X-ImgPro-Reason': 'invalid_cached_content',
+                ...getCORSHeaders(),
+              },
+            });
+          }
+
           // Check ETag for conditional request (304 Not Modified)
           const conditionalResponse = handleConditionalRequest(request, cached.etag);
           if (conditionalResponse) {
@@ -191,7 +216,7 @@ export default {
 
       // Create redirect validator that checks against our allowlist
       const validateRedirect = async (finalUrl: string): Promise<boolean> => {
-        const urlValidation = validateUrlDomain(finalUrl);
+        const urlValidation = validateUrlForFetch(finalUrl);
         if (!urlValidation.valid || !urlValidation.domain) {
           return false;
         }
@@ -201,7 +226,26 @@ export default {
         return redirectValidation.allowed;
       };
 
-      const response = await fetchFromOrigin(parsed.sourceUrl, env, undefined, validateRedirect);
+      // Fetch with block detection
+      const fetchResult = await fetchImageFromOrigin(parsed.sourceUrl, env, request, undefined, validateRedirect);
+      const response = fetchResult.response;
+
+      // Check if origin blocked us (WAF, rate limit, challenge page)
+      if (fetchResult.blocked) {
+        addLog('Origin blocked', `${fetchResult.blockReason} - redirecting to origin`);
+        // TODO: Implement negative caching here to avoid hammering blocked origins
+        // For now, just redirect
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Block-Reason': fetchResult.blockReason || 'unknown',
+            ...getCORSHeaders(),
+          },
+        });
+      }
 
       if (!response.ok) {
         // Redirect to origin - let user see the real error (404, 500, etc.)
@@ -315,18 +359,9 @@ export default {
     } catch (error) {
       console.error('Worker error:', error);
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-
-      // Hard errors for security issues only
-      if (message.includes('Invalid domain') || message.includes('Invalid URL')) {
-        return errorResponse('Invalid request', 400);
-      }
-      if (message.includes('Redirect to')) {
-        return errorResponse('Redirect blocked for security', 403);
-      }
-
-      // For all other errors, try to extract origin URL and redirect
-      // This handles timeouts, fetch failures, R2 errors, etc.
+      // For ALL errors, try to redirect to origin
+      // This ensures the CDN NEVER breaks user experience
+      // Even security errors (SSRF) - let the user's browser handle the redirect directly
       try {
         const parsed = parseUrl(url);
         return new Response(null, {
@@ -340,6 +375,7 @@ export default {
         });
       } catch {
         // URL parsing failed - can't redirect, return generic error
+        // This only happens for completely malformed URLs
         return errorResponse('Invalid request', 400);
       }
     }
