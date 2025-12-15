@@ -37,12 +37,16 @@ const FALLBACK_HEADERS = {
  * - sec-ch-*: Client hints (WAF evasion territory)
  * - sec-fetch-*: Fetch metadata (inaccurate - we're a proxy)
  * - Cookie/Auth: Security risk
+ *
+ * NOTE: Use Pascal-Case to match FALLBACK_HEADERS. The Headers API
+ * (request.headers.get) is case-insensitive, so this works for reading.
+ * Using consistent casing prevents duplicate keys when objects are merged.
  */
 const FORWARDED_HEADERS = [
-  'user-agent',
-  'accept',
-  'accept-language',
-  'referer',  // Where the image is embedded (anti-hotlinking bypass)
+  'User-Agent',
+  'Accept',
+  'Accept-Language',
+  'Referer',  // Where the image is embedded (anti-hotlinking bypass)
 ] as const;
 
 /**

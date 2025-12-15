@@ -99,8 +99,12 @@ export default {
         return errorResponse('Method not allowed', 405);
       }
 
-      // Validate origin against allow/block lists
-      const validation = await validateOrigin(parsed.domain, env);
+      // Run validation and cache check in parallel for better performance
+      const [validation, cached] = await Promise.all([
+        validateOrigin(parsed.domain, env),
+        parsed.forceReprocess ? Promise.resolve(null) : getFromCache(env, parsed.cacheKey),
+      ]);
+
       addLog('Origin validation', `${validation.reason} (source: ${validation.source})`);
 
       if (!validation.allowed) {
@@ -120,94 +124,89 @@ export default {
         });
       }
 
-      // Check R2 cache (skip if force parameter is set)
-      if (!parsed.forceReprocess) {
-        const cached = await getFromCache(env, parsed.cacheKey);
-        if (cached) {
-          addLog('Cache HIT', parsed.cacheKey);
+      // Check R2 cache result
+      if (cached) {
+        addLog('Cache HIT', parsed.cacheKey);
 
-          const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
+        const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
 
-          // Validate cached content is actually an image
-          // (protects against previously cached HTML/garbage)
-          if (!cachedContentType.startsWith('image/')) {
-            addLog('Invalid cached content', `${cachedContentType} - deleting and redirecting`);
-            // Delete invalid cached content
-            try {
-              await env.R2.delete(parsed.cacheKey);
-            } catch (e) {
-              console.error('Failed to delete invalid cache entry:', e);
-            }
-            // Redirect to origin
-            return new Response(null, {
-              status: 302,
-              headers: {
-                'Location': parsed.sourceUrl,
-                'Cache-Control': 'no-store, no-cache, must-revalidate',
-                'X-ImgPro-Status': 'redirect',
-                'X-ImgPro-Reason': 'invalid_cached_content',
-                ...getCORSHeaders(),
-              },
-            });
-          }
-
-          // Check ETag for conditional request (304 Not Modified)
-          const conditionalResponse = handleConditionalRequest(request, cached.etag);
-          if (conditionalResponse) {
-            addLog('Conditional request', '304 Not Modified');
-            // Track as cache hit with 0 bytes (no body transferred)
-            trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
-            return conditionalResponse;
-          }
-
-          const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
-          const metadata = cached.customMetadata || {};
-
-          // If view parameter is set, return HTML viewer
-          // SECURITY: Only allow in debug mode to prevent information disclosure
-          // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
-          // shouldn't count toward billing metrics or inflate production statistics
-          if (parsed.viewImage && env.DEBUG === 'true') {
-            const imageData = await cached.arrayBuffer();
-            const totalTime = Date.now() - startTime;
-            addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
-
-            return createHtmlViewer({
-              imageData,
-              contentType: imageContentType,
-              status: 'cached',
-              imageSize: imageData.byteLength,
-              sourceUrl: parsed.sourceUrl,
-              cdnUrl: request.url.split('?')[0], // Current URL without query params
-              cacheKey: parsed.cacheKey,
-              cachedAt: metadata.cachedAt,
-              processingTime: totalTime,
-              logs,
-              env
-            });
-          }
-
-          // Return the actual image with long cache headers
-          addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
-
-          // Track usage (cache hit)
-          trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
-
-          return new Response(cached.body, {
-            status: 200,
+        // Validate cached content is actually an image
+        // (protects against previously cached HTML/garbage)
+        if (!cachedContentType.startsWith('image/')) {
+          addLog('Invalid cached content', `${cachedContentType} - deleting and redirecting`);
+          // Delete invalid cached content in background (don't block response)
+          ctx.waitUntil(env.R2.delete(parsed.cacheKey).catch(e => {
+            console.error('Failed to delete invalid cache entry:', e);
+          }));
+          // Redirect to origin
+          return new Response(null, {
+            status: 302,
             headers: {
-              'Content-Type': imageContentType,
-              'Content-Length': cached.size.toString(),
-              'Cache-Control': 'public, max-age=31536000, immutable',
-              'ETag': cached.etag,
-              'Last-Modified': cached.uploaded.toUTCString(),
-              'X-ImgPro-Status': 'hit',
-              'X-ImgPro-Cached-At': metadata.cachedAt || '',
+              'Location': parsed.sourceUrl,
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'X-ImgPro-Status': 'redirect',
+              'X-ImgPro-Reason': 'invalid_cached_content',
               ...getCORSHeaders(),
             },
           });
         }
-      } else {
+
+        // Check ETag for conditional request (304 Not Modified)
+        const conditionalResponse = handleConditionalRequest(request, cached.etag);
+        if (conditionalResponse) {
+          addLog('Conditional request', '304 Not Modified');
+          // Track usage (cache hit with 0 bytes - no body transferred)
+          trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
+          return conditionalResponse;
+        }
+
+        const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
+        const metadata = cached.customMetadata || {};
+
+        // If view parameter is set, return HTML viewer
+        // SECURITY: Only allow in debug mode to prevent information disclosure
+        if (parsed.viewImage && env.DEBUG === 'true') {
+          const imageData = await cached.arrayBuffer();
+          const totalTime = Date.now() - startTime;
+          addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
+
+          return createHtmlViewer({
+            imageData,
+            contentType: imageContentType,
+            status: 'cached',
+            imageSize: imageData.byteLength,
+            sourceUrl: parsed.sourceUrl,
+            cdnUrl: request.url.split('?')[0],
+            cacheKey: parsed.cacheKey,
+            cachedAt: metadata.cachedAt,
+            processingTime: totalTime,
+            logs,
+            env
+          });
+        }
+
+        // Return the actual image with long cache headers
+        addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+
+        // Track usage (cache hit)
+        trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
+
+        return new Response(cached.body, {
+          status: 200,
+          headers: {
+            'Content-Type': imageContentType,
+            'Content-Length': cached.size.toString(),
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'ETag': cached.etag,
+            'Last-Modified': cached.uploaded.toUTCString(),
+            'X-ImgPro-Status': 'hit',
+            'X-ImgPro-Cached-At': metadata.cachedAt || '',
+            ...getCORSHeaders(),
+          },
+        });
+      }
+
+      if (parsed.forceReprocess) {
         addLog('Cache bypass', 'Force reprocess requested');
       }
 
@@ -302,18 +301,20 @@ export default {
         });
       }
 
-      // Store in R2
-      await storeInCache(
+      // Store in R2 (background - don't block response)
+      ctx.waitUntil(storeInCache(
         env,
         parsed.cacheKey,
         imageData,
         contentType,
         parsed.sourceUrl,
         parsed.domain
-      );
+      ).catch(e => {
+        console.error('Failed to store in cache:', e);
+      }));
 
       const cdnUrl = request.url.split('?')[0]; // Current URL without query params
-      addLog('Stored in R2', `${formatBytes(imageData.byteLength)}`);
+      addLog('Storing in R2', `${formatBytes(imageData.byteLength)} (background)`);
 
       // If view parameter is set, return HTML viewer
       // SECURITY: Only allow in debug mode to prevent information disclosure
