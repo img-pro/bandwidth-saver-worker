@@ -21,8 +21,8 @@
  */
 
 import type { Env, LogEntry } from './types';
-import { parseUrl, validateOrigin, isImageContentType, validateUrlDomain } from './validation';
-import { fetchFromOrigin, fetchImageData } from './origin';
+import { parseUrl, validateOrigin, isImageContentType, validateUrlForFetch } from './validation';
+import { fetchImageFromOrigin, fetchImageData } from './origin';
 import {
   getFromCache,
   handleHeadRequest,
@@ -99,8 +99,12 @@ export default {
         return errorResponse('Method not allowed', 405);
       }
 
-      // Validate origin against allow/block lists
-      const validation = await validateOrigin(parsed.domain, env);
+      // Run validation and cache check in parallel for better performance
+      const [validation, cached] = await Promise.all([
+        validateOrigin(parsed.domain, env),
+        parsed.forceReprocess ? Promise.resolve(null) : getFromCache(env, parsed.cacheKey),
+      ]);
+
       addLog('Origin validation', `${validation.reason} (source: ${validation.source})`);
 
       if (!validation.allowed) {
@@ -120,69 +124,89 @@ export default {
         });
       }
 
-      // Check R2 cache (skip if force parameter is set)
-      if (!parsed.forceReprocess) {
-        const cached = await getFromCache(env, parsed.cacheKey);
-        if (cached) {
-          addLog('Cache HIT', parsed.cacheKey);
+      // Check R2 cache result
+      if (cached) {
+        addLog('Cache HIT', parsed.cacheKey);
 
-          // Check ETag for conditional request (304 Not Modified)
-          const conditionalResponse = handleConditionalRequest(request, cached.etag);
-          if (conditionalResponse) {
-            addLog('Conditional request', '304 Not Modified');
-            // Track as cache hit with 0 bytes (no body transferred)
-            trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
-            return conditionalResponse;
-          }
+        const cachedContentType = (cached.httpMetadata?.contentType || '').toLowerCase();
 
-          const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
-          const metadata = cached.customMetadata || {};
-
-          // If view parameter is set, return HTML viewer
-          // SECURITY: Only allow in debug mode to prevent information disclosure
-          // NOTE: Debug viewer intentionally skips trackUsage() - diagnostic requests
-          // shouldn't count toward billing metrics or inflate production statistics
-          if (parsed.viewImage && env.DEBUG === 'true') {
-            const imageData = await cached.arrayBuffer();
-            const totalTime = Date.now() - startTime;
-            addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
-
-            return createHtmlViewer({
-              imageData,
-              contentType: imageContentType,
-              status: 'cached',
-              imageSize: imageData.byteLength,
-              sourceUrl: parsed.sourceUrl,
-              cdnUrl: request.url.split('?')[0], // Current URL without query params
-              cacheKey: parsed.cacheKey,
-              cachedAt: metadata.cachedAt,
-              processingTime: totalTime,
-              logs,
-              env
-            });
-          }
-
-          // Return the actual image with long cache headers
-          addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
-
-          // Track usage (cache hit)
-          trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
-
-          return new Response(cached.body, {
-            status: 200,
+        // Validate cached content is actually an image
+        // (protects against previously cached HTML/garbage)
+        if (!cachedContentType.startsWith('image/')) {
+          addLog('Invalid cached content', `${cachedContentType} - deleting and redirecting`);
+          // Delete invalid cached content in background (don't block response)
+          ctx.waitUntil(env.R2.delete(parsed.cacheKey).catch(e => {
+            console.error('Failed to delete invalid cache entry:', e);
+          }));
+          // Redirect to origin
+          return new Response(null, {
+            status: 302,
             headers: {
-              'Content-Type': imageContentType,
-              'Content-Length': cached.size.toString(),
-              'Cache-Control': 'public, max-age=31536000, immutable',
-              'ETag': cached.etag,
-              'Last-Modified': cached.uploaded.toUTCString(),
-              'X-ImgPro-Status': 'hit',
-              'X-ImgPro-Cached-At': metadata.cachedAt || '',
+              'Location': parsed.sourceUrl,
+              'Cache-Control': 'no-store, no-cache, must-revalidate',
+              'X-ImgPro-Status': 'redirect',
+              'X-ImgPro-Reason': 'invalid_cached_content',
               ...getCORSHeaders(),
             },
           });
         }
-      } else {
+
+        // Check ETag for conditional request (304 Not Modified)
+        const conditionalResponse = handleConditionalRequest(request, cached.etag);
+        if (conditionalResponse) {
+          addLog('Conditional request', '304 Not Modified');
+          // Track usage (cache hit with 0 bytes - no body transferred)
+          trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
+          return conditionalResponse;
+        }
+
+        const imageContentType = cached.httpMetadata?.contentType || 'image/jpeg';
+        const metadata = cached.customMetadata || {};
+
+        // If view parameter is set, return HTML viewer
+        // SECURITY: Only allow in debug mode to prevent information disclosure
+        if (parsed.viewImage && env.DEBUG === 'true') {
+          const imageData = await cached.arrayBuffer();
+          const totalTime = Date.now() - startTime;
+          addLog('Generating HTML viewer', `${imageData.byteLength} bytes in ${totalTime}ms`);
+
+          return createHtmlViewer({
+            imageData,
+            contentType: imageContentType,
+            status: 'cached',
+            imageSize: imageData.byteLength,
+            sourceUrl: parsed.sourceUrl,
+            cdnUrl: request.url.split('?')[0],
+            cacheKey: parsed.cacheKey,
+            cachedAt: metadata.cachedAt,
+            processingTime: totalTime,
+            logs,
+            env
+          });
+        }
+
+        // Return the actual image with long cache headers
+        addLog('Serving image', `${cached.size} bytes, ${imageContentType}`);
+
+        // Track usage (cache hit)
+        trackUsage(env, ctx, parsed.domain, cached.size, true, validation.domain_records);
+
+        return new Response(cached.body, {
+          status: 200,
+          headers: {
+            'Content-Type': imageContentType,
+            'Content-Length': cached.size.toString(),
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'ETag': cached.etag,
+            'Last-Modified': cached.uploaded.toUTCString(),
+            'X-ImgPro-Status': 'hit',
+            'X-ImgPro-Cached-At': metadata.cachedAt || '',
+            ...getCORSHeaders(),
+          },
+        });
+      }
+
+      if (parsed.forceReprocess) {
         addLog('Cache bypass', 'Force reprocess requested');
       }
 
@@ -191,7 +215,7 @@ export default {
 
       // Create redirect validator that checks against our allowlist
       const validateRedirect = async (finalUrl: string): Promise<boolean> => {
-        const urlValidation = validateUrlDomain(finalUrl);
+        const urlValidation = validateUrlForFetch(finalUrl);
         if (!urlValidation.valid || !urlValidation.domain) {
           return false;
         }
@@ -201,7 +225,26 @@ export default {
         return redirectValidation.allowed;
       };
 
-      const response = await fetchFromOrigin(parsed.sourceUrl, env, undefined, validateRedirect);
+      // Fetch with block detection
+      const fetchResult = await fetchImageFromOrigin(parsed.sourceUrl, env, request, undefined, validateRedirect);
+      const response = fetchResult.response;
+
+      // Check if origin blocked us (WAF, rate limit, challenge page)
+      if (fetchResult.blocked) {
+        addLog('Origin blocked', `${fetchResult.blockReason} - redirecting to origin`);
+        // TODO: Implement negative caching here to avoid hammering blocked origins
+        // For now, just redirect
+        return new Response(null, {
+          status: 302,
+          headers: {
+            'Location': parsed.sourceUrl,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'X-ImgPro-Status': 'redirect',
+            'X-ImgPro-Block-Reason': fetchResult.blockReason || 'unknown',
+            ...getCORSHeaders(),
+          },
+        });
+      }
 
       if (!response.ok) {
         // Redirect to origin - let user see the real error (404, 500, etc.)
@@ -258,18 +301,20 @@ export default {
         });
       }
 
-      // Store in R2
-      await storeInCache(
+      // Store in R2 (background - don't block response)
+      ctx.waitUntil(storeInCache(
         env,
         parsed.cacheKey,
         imageData,
         contentType,
         parsed.sourceUrl,
         parsed.domain
-      );
+      ).catch(e => {
+        console.error('Failed to store in cache:', e);
+      }));
 
       const cdnUrl = request.url.split('?')[0]; // Current URL without query params
-      addLog('Stored in R2', `${formatBytes(imageData.byteLength)}`);
+      addLog('Storing in R2', `${formatBytes(imageData.byteLength)} (background)`);
 
       // If view parameter is set, return HTML viewer
       // SECURITY: Only allow in debug mode to prevent information disclosure
@@ -315,18 +360,9 @@ export default {
     } catch (error) {
       console.error('Worker error:', error);
 
-      const message = error instanceof Error ? error.message : 'Unknown error';
-
-      // Hard errors for security issues only
-      if (message.includes('Invalid domain') || message.includes('Invalid URL')) {
-        return errorResponse('Invalid request', 400);
-      }
-      if (message.includes('Redirect to')) {
-        return errorResponse('Redirect blocked for security', 403);
-      }
-
-      // For all other errors, try to extract origin URL and redirect
-      // This handles timeouts, fetch failures, R2 errors, etc.
+      // For ALL errors, try to redirect to origin
+      // This ensures the CDN NEVER breaks user experience
+      // Even security errors (SSRF) - let the user's browser handle the redirect directly
       try {
         const parsed = parseUrl(url);
         return new Response(null, {
@@ -340,6 +376,7 @@ export default {
         });
       } catch {
         // URL parsing failed - can't redirect, return generic error
+        // This only happens for completely malformed URLs
         return errorResponse('Invalid request', 400);
       }
     }

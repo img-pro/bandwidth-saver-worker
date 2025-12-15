@@ -39,7 +39,7 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ImgPro Image Viewer</title>
+  <title>Bandwidth Saver - Debug Viewer</title>
   <style>
     /* Dieter Rams / Braun Design Principles */
     * {
@@ -289,8 +289,8 @@ export function createHtmlViewer(options: HtmlViewerOptions): Response {
   <div class="container">
     <header>
       <div>
-        <h1>CDN Image Viewer</h1>
-        <div class="subtitle">ImgPro CDN Worker · Version ${VERSION}</div>
+        <h1>Debug Viewer</h1>
+        <div class="subtitle">Bandwidth Saver CDN Worker · v${VERSION}</div>
       </div>
       <button class="delete-btn" id="deleteBtn" onclick="deleteImage()">Delete Image</button>
     </header>

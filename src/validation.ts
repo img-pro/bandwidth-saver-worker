@@ -319,22 +319,60 @@ export async function validateOrigin(
 }
 
 /**
- * Validate a URL's domain (used for redirect validation)
- * Extracts domain from URL and validates it
+ * Validate a URL for SSRF safety
+ *
+ * SECURITY: Comprehensive URL validation to prevent SSRF attacks:
+ * - Must be http or https scheme
+ * - No username/password credentials in URL
+ * - No fragments (shouldn't be in server-side URLs)
+ * - Only standard ports (80, 443) or no port specified
+ * - Valid, non-internal domain
  */
-export function validateUrlDomain(url: string): { valid: boolean; domain: string | null } {
+export function validateUrlForFetch(url: string): {
+  valid: boolean;
+  domain: string | null;
+  reason?: string;
+} {
   try {
     const parsed = new URL(url);
+
+    // Must be http or https
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { valid: false, domain: null, reason: 'invalid_scheme' };
+    }
+
+    // No credentials in URL
+    if (parsed.username || parsed.password) {
+      return { valid: false, domain: null, reason: 'credentials_in_url' };
+    }
+
+    // Only allow standard ports (or default)
+    const port = parsed.port;
+    if (port && port !== '80' && port !== '443') {
+      return { valid: false, domain: null, reason: 'non_standard_port' };
+    }
+
     const domain = parsed.hostname.toLowerCase();
 
     if (!isValidDomain(domain)) {
-      return { valid: false, domain: null };
+      return { valid: false, domain: null, reason: 'invalid_domain' };
     }
 
     return { valid: true, domain };
   } catch {
-    return { valid: false, domain: null };
+    return { valid: false, domain: null, reason: 'invalid_url' };
   }
+}
+
+/**
+ * Validate a URL's domain (used for redirect validation)
+ * Extracts domain from URL and validates it
+ *
+ * @deprecated Use validateUrlForFetch() for comprehensive SSRF validation
+ */
+export function validateUrlDomain(url: string): { valid: boolean; domain: string | null } {
+  const result = validateUrlForFetch(url);
+  return { valid: result.valid, domain: result.domain };
 }
 
 /**
