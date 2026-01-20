@@ -31,7 +31,7 @@ wrangler login
 
 ```bash
 # Download the worker
-git clone https://github.com/moshi-studio/bandwidth-saver-worker.git
+git clone https://github.com/img-pro/bandwidth-saver-worker.git
 cd bandwidth-saver-worker
 npm install
 
@@ -348,7 +348,7 @@ A: Yes. The worker caches any image URL. Just configure `ALLOWED_ORIGINS` with y
 
 - **WordPress Plugin:** [wordpress.org/plugins/bandwidth-saver](https://wordpress.org/plugins/bandwidth-saver/)
 - **Managed Service:** [img.pro](https://img.pro) (no setup required)
-- **Issues:** [GitHub Issues](https://github.com/moshi-studio/bandwidth-saver-worker/issues)
+- **Issues:** [GitHub Issues](https://github.com/img-pro/bandwidth-saver-worker/issues)
 
 ## License
 
