@@ -29,8 +29,10 @@ export async function trackUsage(
   cacheHit: boolean,
   domainRecords?: DomainRecord[]
 ): Promise<void> {
-  // Skip tracking if USAGE_TRACKER is not bound (self-hosted deployments)
-  if (!env.USAGE_TRACKER) {
+  // Skip tracking if billing infrastructure is not fully configured
+  // Both USAGE_TRACKER (DO) and BILLING_DB (D1) are required for usage tracking
+  // Self-hosted deployments typically have neither bound
+  if (!env.USAGE_TRACKER || !env.BILLING_DB) {
     return;
   }
 

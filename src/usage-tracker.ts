@@ -154,10 +154,17 @@ export class SiteUsageTracker implements DurableObject {
 	 * subtract only what we flushed, preserving any metrics added during the write.
 	 */
 	async alarm(): Promise<void> {
-		// Skip if BILLING_DB is not bound (self-hosted deployments)
+		// If BILLING_DB is not bound, this DO serves no purpose
+		// Clear all accumulated data and stop rescheduling to prevent unbounded growth
 		if (!this.env.BILLING_DB) {
-			console.warn('[UsageTracker] BILLING_DB not bound, skipping D1 write');
-			await this.state.storage.setAlarm(Date.now() + 60000);
+			console.error('[UsageTracker] BILLING_DB not bound - clearing storage and stopping. This is a misconfiguration.');
+			// Reset counters to prevent unbounded storage growth
+			this.bandwidth = 0;
+			this.requests = 0;
+			this.cacheHits = 0;
+			this.cacheMisses = 0;
+			await this.state.storage.deleteAll();
+			// Don't reschedule alarm - let DO go idle and get evicted
 			return;
 		}
 
