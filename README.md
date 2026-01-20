@@ -39,13 +39,16 @@ npm install
 cp wrangler.toml.example wrangler.toml
 ```
 
-Edit `wrangler.toml` and replace these values:
+Edit `wrangler.toml`:
 
-| Placeholder | Replace with | Example |
-|-------------|--------------|---------|
-| `YOUR_ACCOUNT_ID` | Your Cloudflare account ID | `abc123def456` |
-| `YOUR_DOMAIN.com` | Your CDN subdomain | `cdn.example.com` |
-| `YOUR_WORDPRESS_DOMAIN.com` | Your WordPress site domain | `example.com,www.example.com` |
+1. Replace `YOUR_ACCOUNT_ID` with your Cloudflare account ID
+2. Replace `example.com` with your actual domain (in routes AND ALLOWED_ORIGINS)
+
+| Setting | What it means | Example |
+|---------|---------------|---------|
+| `cdn.example.com` (routes) | CDN domain - where browsers request images | `cdn.mysite.com` |
+| `example.com` (zone_name) | Cloudflare zone - your root domain | `mysite.com` |
+| `example.com` (ALLOWED_ORIGINS) | Origin domain - your WordPress site | `mysite.com,www.mysite.com` |
 
 **Finding your account ID:** Run `wrangler whoami` or look at your Cloudflare dashboard URL.
 
@@ -83,10 +86,12 @@ Cloudflare automatically configures DNS and provisions an SSL certificate. Wait 
 Open your browser and try:
 
 ```
-https://cdn.example.com/YOUR_WORDPRESS_DOMAIN.com/wp-content/uploads/any-image.jpg
+https://cdn.example.com/example.com/wp-content/uploads/any-image.jpg
+       └─────┬───────┘ └────┬────┘
+        CDN domain    Origin domain (your WordPress site)
 ```
 
-You should see the image. Check the response headers:
+Replace with your actual domains. You should see the image. Check the response headers:
 - `X-ImgPro-Status: miss` (first request - fetched from WordPress)
 - `X-ImgPro-Status: hit` (subsequent requests - served from R2)
 
@@ -183,7 +188,7 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORIGIN_MODE` | `open` | `list` = only allow ALLOWED_ORIGINS, `open` = allow any domain |
-| `ALLOWED_ORIGINS` | - | Comma-separated domains (for `list` mode) |
+| `ALLOWED_ORIGINS` | - | Comma-separated domains for `list` mode (supports wildcards) |
 | `BLOCKED_ORIGINS` | - | Domains to always block; use `*` as kill switch |
 | `MAX_FILE_SIZE` | `50MB` | Max file size to cache; larger files redirect to origin |
 | `FETCH_TIMEOUT` | `30000` | Origin fetch timeout in milliseconds |
@@ -196,7 +201,14 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 ORIGIN_MODE = "list"
 ALLOWED_ORIGINS = "example.com,www.example.com"
 ```
-Only specified domains can use your CDN. Others redirect to origin.
+Only specified origin domains can use your CDN. Others redirect to origin.
+
+**ALLOWED_ORIGINS examples:**
+| Pattern | Matches |
+|---------|---------|
+| `example.com` | `example.com` only |
+| `example.com,www.example.com` | Both domains |
+| `*.example.com` | All subdomains (but NOT `example.com` itself) |
 
 **`open` (for testing):**
 ```toml
