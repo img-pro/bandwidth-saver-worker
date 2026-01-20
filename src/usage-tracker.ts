@@ -66,9 +66,11 @@ export class SiteUsageTracker implements DurableObject {
 		this.state.blockConcurrencyWhile(async () => {
 			await this.loadFromStorage();
 
-			// Only set alarm if none exists (preserve pending alarms on re-hydration)
+			// Only set alarm if:
+			// 1. No alarm exists (preserve pending alarms on re-hydration)
+			// 2. BILLING_DB is bound (otherwise this DO serves no purpose)
 			const existingAlarm = await this.state.storage.getAlarm();
-			if (!existingAlarm) {
+			if (!existingAlarm && this.env.BILLING_DB) {
 				await this.state.storage.setAlarm(Date.now() + 60000);
 			}
 		});
@@ -155,7 +157,7 @@ export class SiteUsageTracker implements DurableObject {
 	 */
 	async alarm(): Promise<void> {
 		// If BILLING_DB is not bound, this DO serves no purpose
-		// Clear all accumulated data and stop rescheduling to prevent unbounded growth
+		// Clear all accumulated data and stop the alarm loop
 		if (!this.env.BILLING_DB) {
 			console.error('[UsageTracker] BILLING_DB not bound - clearing storage and stopping. This is a misconfiguration.');
 			// Reset counters to prevent unbounded storage growth
@@ -164,7 +166,8 @@ export class SiteUsageTracker implements DurableObject {
 			this.cacheHits = 0;
 			this.cacheMisses = 0;
 			await this.state.storage.deleteAll();
-			// Don't reschedule alarm - let DO go idle and get evicted
+			// Explicitly cancel any pending alarm (constructor may have set one during re-hydration)
+			await this.state.storage.deleteAlarm();
 			return;
 		}
 
