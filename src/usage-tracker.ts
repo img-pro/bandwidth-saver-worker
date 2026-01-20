@@ -154,6 +154,13 @@ export class SiteUsageTracker implements DurableObject {
 	 * subtract only what we flushed, preserving any metrics added during the write.
 	 */
 	async alarm(): Promise<void> {
+		// Skip if BILLING_DB is not bound (self-hosted deployments)
+		if (!this.env.BILLING_DB) {
+			console.warn('[UsageTracker] BILLING_DB not bound, skipping D1 write');
+			await this.state.storage.setAlarm(Date.now() + 60000);
+			return;
+		}
+
 		const now = Math.floor(Date.now() / 1000);
 
 		// Skip if no activity since last flush

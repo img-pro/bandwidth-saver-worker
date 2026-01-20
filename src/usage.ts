@@ -29,6 +29,11 @@ export async function trackUsage(
   cacheHit: boolean,
   domainRecords?: DomainRecord[]
 ): Promise<void> {
+  // Skip tracking if USAGE_TRACKER is not bound (self-hosted deployments)
+  if (!env.USAGE_TRACKER) {
+    return;
+  }
+
   // Skip tracking if we don't have any site_ids
   // This happens in "open" or "list" mode where KV lookups aren't used
   if (!domainRecords || domainRecords.length === 0) {
