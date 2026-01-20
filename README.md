@@ -39,12 +39,16 @@ npm install
 cp wrangler.toml.example wrangler.toml
 ```
 
-Edit `wrangler.toml` and replace these values:
+Edit `wrangler.toml`:
 
-| Placeholder | Replace with | Example |
-|-------------|--------------|---------|
-| `YOUR_ACCOUNT_ID` | Your Cloudflare account ID | `abc123def456` |
-| `YOUR_DOMAIN.com` | Your domain (both CDN and WordPress origin) | `example.com` |
+1. Replace `YOUR_ACCOUNT_ID` with your Cloudflare account ID
+2. Replace `example.com` with your actual domain (in routes AND ALLOWED_ORIGINS)
+
+| Setting | What it means | Example |
+|---------|---------------|---------|
+| `cdn.example.com` (routes) | CDN domain - where browsers request images | `cdn.mysite.com` |
+| `example.com` (zone_name) | Cloudflare zone - your root domain | `mysite.com` |
+| `example.com` (ALLOWED_ORIGINS) | Origin domain - your WordPress site | `mysite.com,www.mysite.com` |
 
 **Finding your account ID:** Run `wrangler whoami` or look at your Cloudflare dashboard URL.
 
@@ -82,10 +86,12 @@ Cloudflare automatically configures DNS and provisions an SSL certificate. Wait 
 Open your browser and try:
 
 ```
-https://cdn.example.com/YOUR_DOMAIN.com/wp-content/uploads/any-image.jpg
+https://cdn.example.com/example.com/wp-content/uploads/any-image.jpg
+       └─────┬───────┘ └────┬────┘
+        CDN domain    Origin domain (your WordPress site)
 ```
 
-You should see the image. Check the response headers:
+Replace with your actual domains. You should see the image. Check the response headers:
 - `X-ImgPro-Status: miss` (first request - fetched from WordPress)
 - `X-ImgPro-Status: hit` (subsequent requests - served from R2)
 
@@ -193,9 +199,9 @@ CDN URL:   https://cdn.example.com/example.com/wp-content/uploads/2024/photo.jpg
 **`list` (recommended for production):**
 ```toml
 ORIGIN_MODE = "list"
-ALLOWED_ORIGINS = "YOUR_DOMAIN.com,www.YOUR_DOMAIN.com"
+ALLOWED_ORIGINS = "example.com,www.example.com"
 ```
-Only specified domains can use your CDN. Others redirect to origin.
+Only specified origin domains can use your CDN. Others redirect to origin.
 
 **ALLOWED_ORIGINS examples:**
 | Pattern | Matches |

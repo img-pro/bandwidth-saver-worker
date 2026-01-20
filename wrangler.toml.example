@@ -5,23 +5,28 @@
 #
 # SETUP:
 #   1. Copy this file: cp wrangler.toml.example wrangler.toml
-#   2. Edit the values below (marked with YOUR_)
-#   3. Create R2 bucket: wrangler r2 bucket create bandwidth-saver-cache
-#   4. Deploy: npm run deploy
-#   5. Add custom domain in Cloudflare dashboard (see README)
+#   2. Replace ALL instances of "example.com" with your actual domain
+#   3. Replace YOUR_ACCOUNT_ID with your Cloudflare account ID
+#   4. Create R2 bucket: wrangler r2 bucket create bandwidth-saver-cache
+#   5. Deploy: npm run deploy
+#   6. Add custom domain in Cloudflare dashboard (see README)
 
 name = "bandwidth-saver"
 main = "src/index.ts"
 compatibility_date = "2025-01-15"
 compatibility_flags = ["nodejs_compat"]
 
-# Your Cloudflare account ID (find in dashboard URL or run: wrangler whoami)
+# Your Cloudflare account ID
+# Find it: wrangler whoami, or in dashboard URL after /accounts/
 account_id = "YOUR_ACCOUNT_ID"
 
-# Route: Which domain serves your CDN
-# Replace with your domain. The zone_name must be a domain in your Cloudflare account.
+# =============================================================================
+# CDN DOMAIN - Where browsers request images from
+# =============================================================================
+# pattern: Your CDN subdomain (e.g., cdn.example.com, images.example.com)
+# zone_name: The Cloudflare zone (your root domain, must be in your account)
 routes = [
-  { pattern = "cdn.YOUR_DOMAIN.com/*", zone_name = "YOUR_DOMAIN.com" }
+  { pattern = "cdn.example.com/*", zone_name = "example.com" }
 ]
 
 # R2 bucket for image caching (private - worker handles all access)
@@ -29,40 +34,40 @@ routes = [
 binding = "R2"
 bucket_name = "bandwidth-saver-cache"
 
-# Configuration
+# =============================================================================
+# ORIGIN DOMAINS - Your WordPress site(s) that images are fetched FROM
+# =============================================================================
+# URL format: https://CDN_DOMAIN/ORIGIN_DOMAIN/path/to/image.jpg
+# Example:    https://cdn.example.com/example.com/wp-content/uploads/photo.jpg
+#                     └─────┬───────┘ └────┬────┘
+#                      CDN domain    Origin domain
+
 [vars]
-# ORIGIN_MODE: Which WordPress sites can use this CDN
-#
-#   "list" (recommended) - Only allow domains you specify in ALLOWED_ORIGINS
-#                          Prevents unauthorized use of your CDN
-#
-#   "open"               - Allow any domain (use only for testing)
-#
+# ORIGIN_MODE: Which sites can use this CDN
+#   "list" (recommended) - Only allow domains in ALLOWED_ORIGINS
+#   "open"               - Allow any domain (testing only)
 ORIGIN_MODE = "list"
 
-# ALLOWED_ORIGINS: Comma-separated list of domains that can use this CDN
-# Only used when ORIGIN_MODE = "list"
+# ALLOWED_ORIGINS: Your WordPress site domain(s)
+# These are the domains the CDN will fetch images FROM
 #
 # Examples:
 #   Single site:    "example.com"
 #   With www:       "example.com,www.example.com"
-#   With subdomain: "example.com,www.example.com,blog.example.com"
-#   Wildcard:       "*.example.com" (all subdomains, but NOT example.com itself)
+#   Wildcard:       "*.example.com" (subdomains only, NOT example.com itself)
 #
-ALLOWED_ORIGINS = "YOUR_DOMAIN.com,www.YOUR_DOMAIN.com"
+ALLOWED_ORIGINS = "example.com,www.example.com"
 
-# BLOCKED_ORIGINS: Domains to always reject (optional, leave empty)
+# BLOCKED_ORIGINS: Domains to always reject (optional)
 # Use "*" as emergency kill switch to block all traffic
 BLOCKED_ORIGINS = ""
 
-# Maximum image file size to cache
-# Larger files redirect to origin (user downloads directly from WordPress)
+# Maximum image file size to cache (larger files redirect to origin)
 MAX_FILE_SIZE = "50MB"
 
 # Origin fetch timeout in milliseconds
-# How long to wait for WordPress to respond
 FETCH_TIMEOUT = "30000"
 
 # Debug mode - enables ?view=1 parameter for troubleshooting
-# Set to "false" in production (prevents information disclosure)
+# SECURITY: Set to "false" in production
 DEBUG = "false"
