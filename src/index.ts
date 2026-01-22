@@ -420,7 +420,7 @@ export default {
         status: 200,
         headers: {
           'Content-Type': contentType,
-          ...(contentLength ? { 'Content-Length': contentLength.toString() } : {}),
+          ...(contentLength !== null ? { 'Content-Length': contentLength.toString() } : {}),
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=31536000, immutable',
           'X-ImgPro-Status': 'miss',

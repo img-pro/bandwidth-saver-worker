@@ -145,7 +145,7 @@ export async function storeInCacheStream(
       sourceUrl: sourceUrl,
       domain: domain,
       cachedAt: cachedAt,
-      ...(contentLength ? { contentLength: contentLength.toString() } : {}),
+      ...(contentLength !== null ? { contentLength: contentLength.toString() } : {}),
     },
   });
 }

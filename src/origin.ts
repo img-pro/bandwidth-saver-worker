@@ -358,6 +358,11 @@ export function createSizeLimitedStream(
     flush() {
       resolveByteCount(totalBytes);
     },
+    cancel(reason) {
+      // Stream was cancelled (e.g., client disconnected, upstream error)
+      // Reject the promise so waitUntil doesn't hang
+      rejectByteCount(new Error(`Stream cancelled: ${reason || 'unknown'}`));
+    },
   });
 
   return {
