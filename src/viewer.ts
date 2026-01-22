@@ -3,10 +3,7 @@
  */
 
 import type { HtmlViewerOptions } from './types';
-import { arrayBufferToBase64, formatBytes, formatTime, getCORSHeaders } from './utils';
-
-// Version should match index.ts - update both when releasing
-const VERSION = '1.2.1';
+import { arrayBufferToBase64, formatBytes, formatTime, getCORSHeaders, VERSION } from './utils';
 
 /**
  * Create HTML viewer with image preview, metadata, and delete button

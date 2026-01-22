@@ -34,10 +34,9 @@ import {
 import { parseRangeHeader, buildContentRangeHeader } from './range';
 import { createHtmlViewer } from './viewer';
 import { createStatsResponse, createLogger } from './analytics';
-import { errorResponse, getCORSHeaders, formatBytes, parseFileSize } from './utils';
+import { errorResponse, getCORSHeaders, formatBytes, parseFileSize, VERSION } from './utils';
 import { trackUsage } from './usage';
 
-const VERSION = '1.3.0';
 
 // Export Durable Object for usage tracking
 export { SiteUsageTracker } from './usage-tracker';
@@ -116,7 +115,12 @@ export default {
           standardRangeEnd = parseInt(match[2], 10);
         }
       }
-      const isStandardRange = standardRangeStart !== null && standardRangeEnd !== null;
+      // Only consider it a valid standard range if start <= end
+      // Invalid ranges like bytes=100-50 should fall through to parseRangeHeader
+      // which will return null and trigger a proper 416 response
+      const isStandardRange = standardRangeStart !== null &&
+                              standardRangeEnd !== null &&
+                              standardRangeStart <= standardRangeEnd;
 
       // Run validation and cache operations in parallel
       // For standard range requests: fetch HEAD (metadata) AND range data in parallel
@@ -289,11 +293,24 @@ export default {
         }
 
         // Full content response (no range or range covers entire file)
-        // For full requests, cacheResult already has the body
-        const fullObject = cacheResult as R2ObjectBody;
+        // For non-range requests, cacheResult already has the body (from getFromCache)
+        // For full-range requests (e.g., bytes=0-99 on 100-byte file), cacheResult is
+        // from getCacheHead (no body), so we need to use rangeData or fetch the full object
+        let fullObject: R2ObjectBody | null = null;
 
-        if (!('body' in fullObject)) {
-          // This shouldn't happen for non-range requests, but handle gracefully
+        if ('body' in cacheResult) {
+          // Non-range request: cacheResult has the body
+          fullObject = cacheResult as R2ObjectBody;
+        } else if (isStandardRange && rangeData) {
+          // Full-range standard request: rangeData was fetched in parallel
+          fullObject = rangeData;
+        } else if (rangeHeader) {
+          // Full-range non-standard request (e.g., bytes=0-): fetch the full object
+          fullObject = await getFromCache(env, parsed.cacheKey);
+        }
+
+        if (!fullObject) {
+          // Shouldn't happen, but handle gracefully
           return new Response(null, {
             status: 302,
             headers: {
@@ -316,8 +333,8 @@ export default {
             'Content-Length': fullObject.size.toString(),
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'public, max-age=31536000, immutable',
-            'ETag': fullObject.etag,
-            'Last-Modified': fullObject.uploaded.toUTCString(),
+            'ETag': cacheResult.etag,
+            'Last-Modified': cacheResult.uploaded.toUTCString(),
             'X-ImgPro-Status': 'hit',
             'X-ImgPro-Cached-At': metadata.cachedAt || '',
             ...getCORSHeaders(),
