@@ -3,7 +3,7 @@
  */
 
 import type { Env, LogEntry } from './types';
-import { getCORSHeaders } from './utils';
+import { getCORSHeaders, VERSION } from './utils';
 
 /**
  * Create stats endpoint response
@@ -15,7 +15,7 @@ import { getCORSHeaders } from './utils';
 export function createStatsResponse(_env: Env): Response {
   const stats = {
     status: 'healthy',
-    version: '1.2.1',
+    version: VERSION,
     mode: 'single-domain',
     features: {
       caching: 'R2 CDN caching enabled',

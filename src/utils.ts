@@ -2,6 +2,9 @@
  * Utility functions for common operations
  */
 
+/** CDN Worker version - single source of truth */
+export const VERSION = '1.3.0';
+
 /**
  * Get CORS headers
  */
