@@ -122,17 +122,22 @@ export default {
                               standardRangeEnd !== null &&
                               standardRangeStart <= standardRangeEnd;
 
+      // Detect "full file" range requests like bytes=0- (Safari video probe)
+      // These should fetch the full object upfront, not HEAD then GET
+      const isFullFileRange = rangeHeader === 'bytes=0-';
+
       // Run validation and cache operations in parallel
       // For standard range requests: fetch HEAD (metadata) AND range data in parallel
+      // For full-file ranges (bytes=0-): fetch full object (Safari video probe)
       // For other range requests: just HEAD (then fetch range after)
       // For full requests: get the full object
       const [validation, cacheResult, rangeData] = await Promise.all([
         validateOrigin(parsed.domain, env),
         parsed.forceReprocess
           ? Promise.resolve(null)
-          : rangeHeader
-            ? getCacheHead(env, parsed.cacheKey)  // Range request: get metadata
-            : getFromCache(env, parsed.cacheKey), // Full request: get full object
+          : (rangeHeader && !isFullFileRange)
+            ? getCacheHead(env, parsed.cacheKey)  // Partial range: get metadata only
+            : getFromCache(env, parsed.cacheKey), // Full request or bytes=0-: get full object
         // For standard ranges, also fetch the range data in parallel
         (parsed.forceReprocess || !isStandardRange)
           ? Promise.resolve(null)
@@ -326,19 +331,28 @@ export default {
         // Track usage (cache hit)
         trackUsage(env, ctx, parsed.domain, fullObject.size, true, validation.domain_records);
 
+        // If Range header was sent (even for full file like bytes=0-), return 206 with Content-Range
+        // This is critical for video: browsers expect 206 to confirm range support for seeking
+        const responseHeaders: Record<string, string> = {
+          'Content-Type': contentType,
+          'Content-Length': fullObject.size.toString(),
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'ETag': cacheResult.etag,
+          'Last-Modified': cacheResult.uploaded.toUTCString(),
+          'X-ImgPro-Status': 'hit',
+          'X-ImgPro-Cached-At': metadata.cachedAt || '',
+          ...getCORSHeaders(),
+        };
+
+        // Add Content-Range for range requests (even full-file ranges)
+        if (rangeInfo) {
+          responseHeaders['Content-Range'] = buildContentRangeHeader(rangeInfo.start, rangeInfo.end, totalSize);
+        }
+
         return new Response(fullObject.body, {
-          status: 200,
-          headers: {
-            'Content-Type': contentType,
-            'Content-Length': fullObject.size.toString(),
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'public, max-age=31536000, immutable',
-            'ETag': cacheResult.etag,
-            'Last-Modified': cacheResult.uploaded.toUTCString(),
-            'X-ImgPro-Status': 'hit',
-            'X-ImgPro-Cached-At': metadata.cachedAt || '',
-            ...getCORSHeaders(),
-          },
+          status: rangeInfo ? 206 : 200,
+          headers: responseHeaders,
         });
       }
 
