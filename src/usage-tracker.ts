@@ -246,30 +246,43 @@ export class SiteUsageTracker implements DurableObject {
 			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, 0);
 		} catch (err) {
 			// Track consecutive D1 failures
-			const failures = (await this.state.storage.get<number>(STORAGE_KEYS.D1_FAILURES)) || 0;
-			const newFailures = failures + 1;
-			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, newFailures);
+			// Wrap in try/catch to prevent storage errors from breaking alarm loop
+			try {
+				const failures = (await this.state.storage.get<number>(STORAGE_KEYS.D1_FAILURES)) || 0;
+				const newFailures = failures + 1;
+				await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, newFailures);
 
-			console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
-				consecutiveFailures: newFailures,
-				accumulatedBandwidth: this.bandwidth,
-				accumulatedRequests: this.requests,
-			});
+				console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
+					consecutiveFailures: newFailures,
+					accumulatedBandwidth: this.bandwidth,
+					accumulatedRequests: this.requests,
+				});
 
-			// Alert if failure threshold exceeded (indicates persistent D1 issue)
-			if (newFailures >= D1_FAILURE_ALERT_THRESHOLD) {
-				console.error(
-					`[UsageTracker] ALERT: ${newFailures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
-					`Accumulated: ${this.bandwidth} bytes, ${this.requests} requests. ` +
-					`Data preserved in DO storage, will retry on next alarm.`
-				);
+				// Alert if failure threshold exceeded (indicates persistent D1 issue)
+				if (newFailures >= D1_FAILURE_ALERT_THRESHOLD) {
+					console.error(
+						`[UsageTracker] ALERT: ${newFailures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
+						`Accumulated: ${this.bandwidth} bytes, ${this.requests} requests. ` +
+						`Data preserved in DO storage, will retry on next alarm.`
+					);
+				}
+			} catch (storageErr) {
+				// Storage also failing - just log, alarm will still be rescheduled
+				console.error(`[UsageTracker] Storage error while tracking D1 failure for ${flushDomain}:`, storageErr);
 			}
 
 			// Don't modify counters - will retry on next alarm
 			// This prevents data loss if D1 is temporarily unavailable
+		} finally {
+			// CRITICAL: Always reschedule alarm to prevent permanent stoppage
+			// Even if D1 and storage both fail, we must keep trying
+			try {
+				await this.state.storage.setAlarm(Date.now() + 60000);
+			} catch (alarmErr) {
+				// If we can't set alarm, storage is fundamentally broken
+				// Log and hope the next request to this DO triggers recovery
+				console.error(`[UsageTracker] CRITICAL: Failed to reschedule alarm for ${flushDomain}:`, alarmErr);
+			}
 		}
-
-		// Schedule next alarm
-		await this.state.storage.setAlarm(Date.now() + 60000);
 	}
 }
