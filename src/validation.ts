@@ -200,13 +200,18 @@ export function matchesDomainList(domain: string, list: string): boolean {
  *   Value: JSON DomainRecord[] - Array of { site_id, status }
  *
  * Same domain can belong to multiple sites (e.g., shared agency CDN)
+ *
+ * Performance: Uses 60s edge cache (cacheTtl) to avoid KV lookups on every request.
+ * Trade-off: Domain status changes take up to 60s to propagate.
  */
 async function getDomainRecords(
   domain: string,
   kv: KVNamespace
 ): Promise<DomainRecord[]> {
   try {
-    const value = await kv.get(domain);
+    // cacheTtl: Cache at edge for 60s to reduce KV latency on repeated requests
+    // This is separate from KV's own caching - it's Cloudflare edge cache
+    const value = await kv.get(domain, { cacheTtl: 60 });
     if (!value) return [];
 
     const parsed = JSON.parse(value);
@@ -248,19 +253,9 @@ export async function validateOrigin(
   }
 
   // Mode: open - allow all (blocklist already checked)
-  // BUT still lookup KV for usage tracking if available
+  // Skip KV lookup entirely for speed - open mode implies no billing
   if (mode === 'open') {
-    // Try to get domain records for usage tracking (non-blocking)
-    let domain_records: DomainRecord[] | undefined;
-    if (env.ORIGINS_KV) {
-      try {
-        domain_records = await getDomainRecords(domain, env.ORIGINS_KV);
-      } catch (e) {
-        // Silently fail - tracking is optional in open mode
-        console.warn('[validateOrigin] KV lookup failed in open mode:', e);
-      }
-    }
-    return { allowed: true, reason: 'allowed', source: 'default', domain_records };
+    return { allowed: true, reason: 'allowed', source: 'default' };
   }
 
   // Mode: list - check ALLOWED_ORIGINS config
