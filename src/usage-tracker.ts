@@ -247,17 +247,18 @@ export class SiteUsageTracker implements DurableObject {
 			this.cacheHits -= flushCacheHits;
 			this.cacheMisses -= flushCacheMisses;
 
-			// Persist the new counter values (may be > 0 if fetch() ran during D1 write)
+			// D1 write succeeded - reset failure counter
+			this.d1Failures = 0;
+
+			// Persist all values atomically (counters + d1Failures reset)
 			// CRITICAL: If this fails after D1 succeeded, we risk double-billing on DO eviction
 			await this.state.storage.put({
 				[STORAGE_KEYS.BANDWIDTH]: this.bandwidth,
 				[STORAGE_KEYS.REQUESTS]: this.requests,
 				[STORAGE_KEYS.CACHE_HITS]: this.cacheHits,
 				[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
+				[STORAGE_KEYS.D1_FAILURES]: 0,
 			});
-			// D1 write succeeded - reset failure counter
-			this.d1Failures = 0;
-			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, 0);
 		} catch (err) {
 			if (d1Succeeded) {
 				// D1 succeeded but storage failed - CRITICAL: risk of double-billing on DO eviction
