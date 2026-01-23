@@ -22,7 +22,7 @@
 
 import type { Env, LogEntry } from './types';
 import { parseUrl, validateOrigin, isImageContentType, isMediaContentType, validateUrlForFetch } from './validation';
-import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream, createByteCountingStream } from './origin';
+import { fetchMediaFromOrigin, validateResponseSize, createSizeLimitedStream } from './origin';
 import {
   getFromCache,
   getFromCacheWithRange,

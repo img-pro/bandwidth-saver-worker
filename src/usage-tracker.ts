@@ -59,6 +59,7 @@ export class SiteUsageTracker implements DurableObject {
 	private requests: number = 0;
 	private cacheHits: number = 0;
 	private cacheMisses: number = 0;
+	private d1Failures: number = 0;
 	private initialized: boolean = false;
 
 	constructor(state: DurableObjectState, env: Env) {
@@ -91,6 +92,7 @@ export class SiteUsageTracker implements DurableObject {
 			STORAGE_KEYS.REQUESTS,
 			STORAGE_KEYS.CACHE_HITS,
 			STORAGE_KEYS.CACHE_MISSES,
+			STORAGE_KEYS.D1_FAILURES,
 		]);
 
 		this.siteId = (stored.get(STORAGE_KEYS.SITE_ID) as number) || 0;
@@ -99,6 +101,7 @@ export class SiteUsageTracker implements DurableObject {
 		this.requests = (stored.get(STORAGE_KEYS.REQUESTS) as number) || 0;
 		this.cacheHits = (stored.get(STORAGE_KEYS.CACHE_HITS) as number) || 0;
 		this.cacheMisses = (stored.get(STORAGE_KEYS.CACHE_MISSES) as number) || 0;
+		this.d1Failures = (stored.get(STORAGE_KEYS.D1_FAILURES) as number) || 0;
 
 		// If we have a siteId, we've been initialized before
 		this.initialized = this.siteId !== 0 || this.domain !== '';
@@ -243,25 +246,25 @@ export class SiteUsageTracker implements DurableObject {
 				[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
 			});
 			// D1 write succeeded - reset failure counter
+			this.d1Failures = 0;
 			await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, 0);
 		} catch (err) {
 			// Track consecutive D1 failures
 			// Wrap in try/catch to prevent storage errors from breaking alarm loop
 			try {
-				const failures = (await this.state.storage.get<number>(STORAGE_KEYS.D1_FAILURES)) || 0;
-				const newFailures = failures + 1;
-				await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, newFailures);
+				this.d1Failures += 1;
+				await this.state.storage.put(STORAGE_KEYS.D1_FAILURES, this.d1Failures);
 
 				console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
-					consecutiveFailures: newFailures,
+					consecutiveFailures: this.d1Failures,
 					accumulatedBandwidth: this.bandwidth,
 					accumulatedRequests: this.requests,
 				});
 
 				// Alert if failure threshold exceeded (indicates persistent D1 issue)
-				if (newFailures >= D1_FAILURE_ALERT_THRESHOLD) {
+				if (this.d1Failures >= D1_FAILURE_ALERT_THRESHOLD) {
 					console.error(
-						`[UsageTracker] ALERT: ${newFailures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
+						`[UsageTracker] ALERT: ${this.d1Failures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
 						`Accumulated: ${this.bandwidth} bytes, ${this.requests} requests. ` +
 						`Data preserved in DO storage, will retry on next alarm.`
 					);
