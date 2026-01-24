@@ -598,7 +598,8 @@ export default {
 
       // Determine if we should return 206 Partial Content
       // Video players expect 206 with Content-Range to confirm range support
-      const shouldReturn206 = rangeHeader && contentLength !== null;
+      // For empty files (contentLength === 0), return 200 - no bytes to serve in a range
+      const shouldReturn206 = rangeHeader && contentLength !== null && contentLength > 0;
       const status = shouldReturn206 ? 206 : 200;
 
       // Build response headers
