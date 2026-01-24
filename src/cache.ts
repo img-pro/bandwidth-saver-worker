@@ -37,38 +37,6 @@ export async function deleteFromCache(
 }
 
 /**
- * Handle HEAD request for cached media
- */
-export async function handleHeadRequest(
-  env: Env,
-  cacheKey: string
-): Promise<Response> {
-  const cached = await getCacheHead(env, cacheKey);
-
-  if (cached) {
-    return new Response(null, {
-      status: 200,
-      headers: {
-        'Content-Type': cached.httpMetadata?.contentType || 'application/octet-stream',
-        'Content-Length': cached.size.toString(),
-        'Accept-Ranges': 'bytes',
-        'ETag': cached.etag,
-        'Last-Modified': cached.uploaded.toUTCString(),
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        'X-ImgPro-Status': 'cached',
-        'X-ImgPro-Cached-At': cached.customMetadata?.cachedAt || '',
-        ...getCORSHeaders(),
-      },
-    });
-  }
-
-  return new Response(null, {
-    status: 404,
-    headers: getCORSHeaders(),
-  });
-}
-
-/**
  * Check ETag for conditional requests
  */
 export function handleConditionalRequest(
@@ -134,43 +102,26 @@ export async function storeInCacheStream(
   sourceUrl: string,
   domain: string
 ): Promise<void> {
+  // R2.put() requires streams with known length.
+  // Skip caching for chunked responses (no Content-Length) to avoid:
+  // 1. Memory exhaustion from buffering potentially large files
+  // 2. Cloudflare Workers memory limits (typically 128MB)
+  // Most media files have Content-Length; chunked is rare for static content.
+  if (contentLength === null) {
+    console.log(`[R2 CACHE] Skipping cache for chunked response: ${cacheKey}`);
+    // Consume and discard the stream to avoid memory leaks
+    await body.cancel();
+    return;
+  }
+
   const cachedAt = new Date().toISOString();
 
-  // R2.put() requires streams with known length.
-  // Use FixedLengthStream when Content-Length is available.
-  // For chunked responses (no Content-Length), buffer the entire content.
-  let uploadBody: ReadableStream | ArrayBuffer;
-
-  if (contentLength !== null) {
-    // Wrap in FixedLengthStream for known-length streams
-    const { readable, writable } = new FixedLengthStream(contentLength);
-    body.pipeTo(writable).catch(() => {
-      // Stream error - will be caught by R2.put
-    });
-    uploadBody = readable;
-  } else {
-    // For unknown length (chunked), we must buffer
-    // This is less efficient but necessary for R2
-    const reader = body.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      totalLength += value.byteLength;
-    }
-
-    // Combine chunks into single ArrayBuffer
-    const buffer = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      buffer.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    uploadBody = buffer.buffer;
-  }
+  // Wrap in FixedLengthStream for known-length streams
+  const { readable, writable } = new FixedLengthStream(contentLength);
+  body.pipeTo(writable).catch(() => {
+    // Stream error - will be caught by R2.put
+  });
+  const uploadBody = readable;
 
   await env.R2.put(cacheKey, uploadBody, {
     httpMetadata: {

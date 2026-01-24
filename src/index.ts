@@ -27,7 +27,6 @@ import {
   getFromCache,
   getFromCacheWithRange,
   getCacheHead,
-  handleHeadRequest,
   handleConditionalRequest,
   storeInCacheStream,
 } from './cache';
@@ -123,6 +122,7 @@ export default {
       const isFullFileRange = rangeHeader === 'bytes=0-';
 
       // Run validation and cache operations in parallel
+      // For HEAD requests: only fetch metadata (never full body)
       // For standard range requests: fetch HEAD (metadata) AND range data in parallel
       // For full-file ranges (bytes=0-): fetch full object (Safari video probe)
       // For other range requests: just HEAD (then fetch range after)
@@ -131,11 +131,12 @@ export default {
         validateOrigin(parsed.domain, env),
         parsed.forceReprocess
           ? Promise.resolve(null)
-          : (rangeHeader && !isFullFileRange)
-            ? getCacheHead(env, parsed.cacheKey)  // Partial range: get metadata only
-            : getFromCache(env, parsed.cacheKey), // Full request or bytes=0-: get full object
-        // For standard ranges, also fetch the range data in parallel
-        (parsed.forceReprocess || !isStandardRange)
+          : (isHeadRequest || (rangeHeader && !isFullFileRange))
+            ? getCacheHead(env, parsed.cacheKey)  // HEAD or partial range: metadata only
+            : getFromCache(env, parsed.cacheKey), // Full GET request or bytes=0-: get full object
+        // For standard ranges (GET only), also fetch the range data in parallel
+        // Skip for HEAD requests - they don't need the actual range data
+        (parsed.forceReprocess || isHeadRequest || !isStandardRange)
           ? Promise.resolve(null)
           : getFromCacheWithRange(env, parsed.cacheKey, {
               start: standardRangeStart!,
