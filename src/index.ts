@@ -270,8 +270,8 @@ export default {
         const conditionalResponse = handleConditionalRequest(request, cacheResult.etag);
         if (conditionalResponse) {
           addLog('Conditional request', '304 Not Modified');
-          // Track usage (cache hit with 0 bytes - no body transferred)
-          trackUsage(env, ctx, parsed.domain, 0, true, validation.domain_records);
+          // Track usage (cache hit - no body transferred)
+          trackUsage(env, ctx, parsed.domain, true, validation.domain_records);
           return conditionalResponse;
         }
 
@@ -347,9 +347,8 @@ export default {
 
           addLog('Serving partial', `${rangeInfo.length} bytes${isStandardRange ? ' (parallel fetch)' : ''}`);
 
-          // Track requested range size (not actual bytes - for performance)
-          // Trade-off: may over-count if client disconnects early
-          trackUsage(env, ctx, parsed.domain, rangeInfo.length, true, validation.domain_records);
+          // Track usage (cache hit)
+          trackUsage(env, ctx, parsed.domain, true, validation.domain_records);
 
           return new Response(partialObject.body, {
             status: 206,
@@ -397,10 +396,8 @@ export default {
           });
         }
 
-        // Track requested size (not actual bytes - for performance)
-        // Trade-off: may over-count if client disconnects early
-        const bytesToTrack = rangeInfo ? rangeInfo.length : fullObject.size;
-        trackUsage(env, ctx, parsed.domain, bytesToTrack, true, validation.domain_records);
+        // Track usage (cache hit)
+        trackUsage(env, ctx, parsed.domain, true, validation.domain_records);
 
         addLog('Serving media', `${fullObject.size} bytes, ${contentType}`);
 
@@ -561,14 +558,13 @@ export default {
       // Always use size-limited stream for defense-in-depth:
       // - Content-Length can be spoofed (send small header, stream large body)
       // - HTTP/2+ framing may not enforce Content-Length boundaries
-      // - Provides accurate byte counting for usage tracking
       const { stream: limitedStream, byteCount } = createSizeLimitedStream(response.body, maxSize);
       const [cacheStream, responseStream] = limitedStream.tee();
 
-      // Track usage after stream completes (actual bytes, not Content-Length)
+      // Track usage after stream completes (cache miss)
       ctx.waitUntil(
-        byteCount.then(bytes => {
-          trackUsage(env, ctx, parsed.domain, bytes, false, validation.domain_records);
+        byteCount.then(() => {
+          trackUsage(env, ctx, parsed.domain, false, validation.domain_records);
         }).catch(() => {
           // Size limit exceeded - usage not tracked (request failed anyway)
         })
