@@ -2,7 +2,7 @@
  * Per-Site Usage Tracker Durable Object
  *
  * Each WordPress site gets its own Durable Object instance that:
- * 1. Accumulates usage metrics in persistent storage (survives eviction)
+ * 1. Accumulates request metrics in persistent storage (survives eviction)
  * 2. Writes to billing D1 database every 60 seconds via alarm
  * 3. Only writes when there's actual activity (silent when idle)
  *
@@ -22,6 +22,9 @@
  * - Distributed across Cloudflare's global fleet
  * - Max 1 D1 write per site per minute
  * - 10,000 active sites = 166 writes/sec (well within D1 capacity)
+ *
+ * Note: Bandwidth tracking has been removed for the Unlimited Media CDN model.
+ * We now track requests only (for reporting purposes).
  */
 
 import type { Env } from './types';
@@ -29,7 +32,6 @@ import type { Env } from './types';
 export interface UsageMetrics {
 	siteId: number;
 	domain: string;
-	bytes: number;
 	cacheHit: boolean;
 }
 
@@ -37,7 +39,6 @@ export interface UsageMetrics {
 const STORAGE_KEYS = {
 	SITE_ID: 'siteId',
 	DOMAIN: 'domain',
-	BANDWIDTH: 'bandwidth',
 	REQUESTS: 'requests',
 	CACHE_HITS: 'cacheHits',
 	CACHE_MISSES: 'cacheMisses',
@@ -55,7 +56,6 @@ export class SiteUsageTracker implements DurableObject {
 	// These are synced with state.storage on each operation
 	private siteId: number = 0;
 	private domain: string = '';
-	private bandwidth: number = 0;
 	private requests: number = 0;
 	private cacheHits: number = 0;
 	private cacheMisses: number = 0;
@@ -88,7 +88,6 @@ export class SiteUsageTracker implements DurableObject {
 		const stored = await this.state.storage.get<number | string>([
 			STORAGE_KEYS.SITE_ID,
 			STORAGE_KEYS.DOMAIN,
-			STORAGE_KEYS.BANDWIDTH,
 			STORAGE_KEYS.REQUESTS,
 			STORAGE_KEYS.CACHE_HITS,
 			STORAGE_KEYS.CACHE_MISSES,
@@ -97,7 +96,6 @@ export class SiteUsageTracker implements DurableObject {
 
 		this.siteId = (stored.get(STORAGE_KEYS.SITE_ID) as number) || 0;
 		this.domain = (stored.get(STORAGE_KEYS.DOMAIN) as string) || '';
-		this.bandwidth = (stored.get(STORAGE_KEYS.BANDWIDTH) as number) || 0;
 		this.requests = (stored.get(STORAGE_KEYS.REQUESTS) as number) || 0;
 		this.cacheHits = (stored.get(STORAGE_KEYS.CACHE_HITS) as number) || 0;
 		this.cacheMisses = (stored.get(STORAGE_KEYS.CACHE_MISSES) as number) || 0;
@@ -128,8 +126,7 @@ export class SiteUsageTracker implements DurableObject {
 				updates.set(STORAGE_KEYS.DOMAIN, metrics.domain);
 			}
 
-			// Accumulate metrics
-			this.bandwidth += metrics.bytes;
+			// Accumulate metrics (requests only, bandwidth tracking removed)
 			this.requests += 1;
 
 			if (metrics.cacheHit) {
@@ -139,7 +136,6 @@ export class SiteUsageTracker implements DurableObject {
 			}
 
 			// Persist all counters atomically
-			updates.set(STORAGE_KEYS.BANDWIDTH, this.bandwidth);
 			updates.set(STORAGE_KEYS.REQUESTS, this.requests);
 			updates.set(STORAGE_KEYS.CACHE_HITS, this.cacheHits);
 			updates.set(STORAGE_KEYS.CACHE_MISSES, this.cacheMisses);
@@ -168,7 +164,6 @@ export class SiteUsageTracker implements DurableObject {
 		if (!this.env.BILLING_DB) {
 			console.error('[UsageTracker] BILLING_DB not bound - clearing storage and stopping. This is a misconfiguration.');
 			// Reset counters to prevent unbounded storage growth
-			this.bandwidth = 0;
 			this.requests = 0;
 			this.cacheHits = 0;
 			this.cacheMisses = 0;
@@ -196,7 +191,6 @@ export class SiteUsageTracker implements DurableObject {
 
 		// Capture current values BEFORE any await points
 		// This ensures we only flush what existed at this moment
-		const flushBandwidth = this.bandwidth;
 		const flushRequests = this.requests;
 		const flushCacheHits = this.cacheHits;
 		const flushCacheMisses = this.cacheMisses;
@@ -209,40 +203,38 @@ export class SiteUsageTracker implements DurableObject {
 		try {
 			// Write to D1 in batch transaction
 			// NOTE: During this await, fetch() can run and increment counters
+			// Bandwidth tracking removed - writing 0 for schema compatibility
 			const batch = [
-				// Update current period totals in sites table
+				// Update current period totals in sites table (bandwidth=0, only tracking cache stats)
 				this.env.BILLING_DB.prepare(
 					`UPDATE sites SET
-						bandwidth_used_bytes = bandwidth_used_bytes + ?,
 						cache_hits = cache_hits + ?,
 						cache_misses = cache_misses + ?,
 						updated_at = ?
 					WHERE id = ?`
-				).bind(flushBandwidth, flushCacheHits, flushCacheMisses, now, flushSiteId),
+				).bind(flushCacheHits, flushCacheMisses, now, flushSiteId),
 
-				// Insert/update hourly rollup
+				// Insert/update hourly rollup (bandwidth_bytes=0 for schema compatibility)
 				this.env.BILLING_DB.prepare(
 					`INSERT INTO usage_hourly (site_id, hour_start, bandwidth_bytes, requests, cache_hits, cache_misses, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+					VALUES (?, ?, 0, ?, ?, ?, ?, ?)
 					ON CONFLICT (site_id, hour_start) DO UPDATE SET
-						bandwidth_bytes = bandwidth_bytes + excluded.bandwidth_bytes,
 						requests = requests + excluded.requests,
 						cache_hits = cache_hits + excluded.cache_hits,
 						cache_misses = cache_misses + excluded.cache_misses,
 						updated_at = excluded.updated_at`
-				).bind(flushSiteId, hourStart, flushBandwidth, flushRequests, flushCacheHits, flushCacheMisses, now, now),
+				).bind(flushSiteId, hourStart, flushRequests, flushCacheHits, flushCacheMisses, now, now),
 			];
 
 			await this.env.BILLING_DB.batch(batch);
 			d1Succeeded = true;
 
 			console.log(
-				`[UsageTracker] Flushed ${flushDomain}: ${flushRequests} req, ${flushBandwidth} bytes, ${flushCacheHits} hits, ${flushCacheMisses} misses`
+				`[UsageTracker] Flushed ${flushDomain}: ${flushRequests} req, ${flushCacheHits} hits, ${flushCacheMisses} misses`
 			);
 
 			// Subtract only what we flushed, preserving any metrics added during D1 write
 			// This is safe because fetch() only adds to counters, never subtracts
-			this.bandwidth -= flushBandwidth;
 			this.requests -= flushRequests;
 			this.cacheHits -= flushCacheHits;
 			this.cacheMisses -= flushCacheMisses;
@@ -251,9 +243,8 @@ export class SiteUsageTracker implements DurableObject {
 			this.d1Failures = 0;
 
 			// Persist all values atomically (counters + d1Failures reset)
-			// CRITICAL: If this fails after D1 succeeded, we risk double-billing on DO eviction
+			// CRITICAL: If this fails after D1 succeeded, we risk double-counting on DO eviction
 			await this.state.storage.put({
-				[STORAGE_KEYS.BANDWIDTH]: this.bandwidth,
 				[STORAGE_KEYS.REQUESTS]: this.requests,
 				[STORAGE_KEYS.CACHE_HITS]: this.cacheHits,
 				[STORAGE_KEYS.CACHE_MISSES]: this.cacheMisses,
@@ -261,14 +252,14 @@ export class SiteUsageTracker implements DurableObject {
 			});
 		} catch (err) {
 			if (d1Succeeded) {
-				// D1 succeeded but storage failed - CRITICAL: risk of double-billing on DO eviction
+				// D1 succeeded but storage failed - CRITICAL: risk of double-counting on DO eviction
 				// The data is already in D1, but if DO evicts before storage recovers,
 				// loadFromStorage will restore old values and we'll write the same data again.
 				// In-memory counters are already decremented, so we're OK if DO stays alive.
 				console.error(
 					`[UsageTracker] CRITICAL: D1 succeeded but storage failed for ${flushDomain}. ` +
 					`If DO evicts before storage recovers, data may be double-counted. ` +
-					`Flushed: ${flushBandwidth} bytes, ${flushRequests} requests.`,
+					`Flushed: ${flushRequests} requests.`,
 					err
 				);
 				// Don't increment d1Failures - D1 didn't fail
@@ -281,7 +272,6 @@ export class SiteUsageTracker implements DurableObject {
 
 					console.error(`[UsageTracker] D1 write failed for ${flushDomain}:`, err, {
 						consecutiveFailures: this.d1Failures,
-						accumulatedBandwidth: this.bandwidth,
 						accumulatedRequests: this.requests,
 					});
 
@@ -289,7 +279,7 @@ export class SiteUsageTracker implements DurableObject {
 					if (this.d1Failures >= D1_FAILURE_ALERT_THRESHOLD) {
 						console.error(
 							`[UsageTracker] ALERT: ${this.d1Failures} consecutive D1 failures for site:${flushSiteId} (${flushDomain}). ` +
-							`Accumulated: ${this.bandwidth} bytes, ${this.requests} requests. ` +
+							`Accumulated: ${this.requests} requests. ` +
 							`Data preserved in DO storage, will retry on next alarm.`
 						);
 					}

@@ -1,8 +1,11 @@
 /**
  * Usage tracking utilities
  *
- * Sends metrics to per-site Durable Objects for aggregation
+ * Sends request metrics to per-site Durable Objects for aggregation
  * Supports M:N model: same domain can track to multiple sites
+ *
+ * Note: Bandwidth tracking has been removed - we now track requests only
+ * for the Unlimited Media CDN pricing model.
  */
 
 import type { Env, DomainRecord } from './types';
@@ -12,12 +15,11 @@ import type { Env, DomainRecord } from './types';
  *
  * M:N Model: Tracks to ALL sites that registered this domain
  * Example: If domain "cdn.agency.com" is registered to 3 sites,
- * all 3 sites get charged the bandwidth.
+ * all 3 sites get the request counted.
  *
  * @param env Environment bindings
  * @param ctx Execution context for waitUntil
  * @param domain Origin domain
- * @param bytes Image size in bytes
  * @param cacheHit Whether this was a cache hit
  * @param domainRecords Array of domain records from KV (M:N relationship)
  */
@@ -25,7 +27,6 @@ export async function trackUsage(
   env: Env,
   ctx: ExecutionContext,
   domain: string,
-  bytes: number,
   cacheHit: boolean,
   domainRecords?: DomainRecord[]
 ): Promise<void> {
@@ -58,7 +59,6 @@ export async function trackUsage(
       body: JSON.stringify({
         siteId: record.site_id,
         domain,
-        bytes,
         cacheHit,
       }),
     });
